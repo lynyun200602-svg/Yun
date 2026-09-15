@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>发面馒头</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <a class="brand" href="/">
+      <svg class="brand-logo" viewBox="0 0 32 32" width="25" height="25" aria-hidden="true">
+        <path d="M16 3C9.9 3 5.5 8.1 5.5 13.8c0 4.3 3.5 8 3.5 8h14s3.5-3.7 3.5-8C26.5 8.1 22.1 3 16 3z" fill="#3370ff"/>
+        <path d="M13.2 9.6c1.6-1.4 4-1.4 5.6 0" stroke="#ffffff" stroke-width="1.7" fill="none" stroke-linecap="round"/>
+      </svg>
+      <span>发面馒头</span>
+    </a>
+    <button class="hamburger" id="hamburger" aria-label="菜单">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="/" class="active">问答</a>
+      <a href="/cache-manage">缓存管理</a>
+      <a href="/setting">设置</a>
+    </div>
+  </nav>
+
+  <div class="layout">
+    <!-- 左侧栏：简历资料 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-title">📁 简历资料</span>
+        <div class="collection-bar">
+          <select class="collection-select" id="collectionSelect"></select>
+          <button class="icon-btn" id="addCollectionBtn" type="button" title="新建简历">＋</button>
+          <button class="icon-btn danger" id="delCollectionBtn" type="button" title="删除当前简历">🗑</button>
+        </div>
+        <span class="sidebar-desc">切换简历，问答缓存各自独立</span>
+      </div>
+      <div class="upload-zone" id="uploadZone">
+        <div class="upload-zone-icon">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9"/><path d="m8 16 4-4 4 4"/></svg>
+        </div>
+        <div class="upload-zone-title">点击或拖拽上传简历</div>
+        <div class="upload-zone-sub">支持 PDF / DOCX · 可多选</div>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf,.docx" multiple style="display:none;">
+      <div class="file-section-head">
+        <span>已上传文件</span>
+        <span class="file-count" id="fileCount">0</span>
+      </div>
+      <div class="file-list" id="fileList"></div>
+    </aside>
+
+    <!-- 右侧：聊天区铺满 -->
+    <main class="chat-panel">
+      <div class="chat-head">
+        <span>💬 面试问答</span>
+        <span id="modelBadge" class="model-badge">加载模型…</span>
+      </div>
+      <div class="chat-box" id="chatBox"></div>
+      <div class="chat-input">
+        <button class="mic-btn" id="micBtn" type="button" title="语音输入" aria-label="语音输入">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+        </button>
+        <textarea id="question" placeholder="输入面试问题，如：介绍一下你简历上的 XX 项目" rows="1"></textarea>
+        <button class="btn send-btn" id="sendBtn">
+          <svg class="send-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
+          <span class="send-label">发送</span>
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let toastTimer = null;
+    function toast(msg) {
+      const t = $("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.remove("show"), 2500);
+    }
+
+    // 汉堡菜单
+    $("hamburger").addEventListener("click", () => {
+      $("navLinks").classList.toggle("open");
+    });
+
+    // 加载当前模型配置（默认沿用上次保存的，无需重复选择）
+    let currentModel = "";
+    async function loadSetting() {
+      try {
+        const res = await fetch("/api/setting");
+        const data = await res.json();
+        currentModel = data.model;
+        $("modelBadge").textContent = `当前模型：${data.model}（${data.provider}）`;
+      } catch (e) {
+        $("modelBadge").textContent = "模型加载失败";
+      }
+    }
+
+    // ===== 简历集合（分支）=====
+    let currentCollectionId = null;
+    const EMPTY_STATE_HTML = `<div class="empty-state">
+          <span class="empty-float f1">✦</span>
+          <span class="empty-float f2">✧</span>
+          <span class="empty-float f3">✦</span>
+          <svg class="empty-logo" viewBox="0 0 120 120" width="112" height="112" aria-hidden="true">
+            <defs>
+              <linearGradient id="bunBody" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#ffffff"/>
+                <stop offset="1" stop-color="#e9efff"/>
+              </linearGradient>
+            </defs>
+            <ellipse cx="60" cy="88" rx="26" ry="6" fill="#d7dae2" opacity="0.55"/>
+            <path d="M60 20c-15 0-24.5 10.5-24.5 23 0 8.5 5 15.5 5 15.5h39s5-7 5-15.5c0-12.5-9.5-23-24.5-23z" fill="url(#bunBody)" stroke="#d6e4ff" stroke-width="2"/>
+            <path d="M52.5 40c1.6-1.8 13.4-1.8 15 0" stroke="#c9d8ff" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+            <circle cx="50" cy="51" r="3.4" fill="#1f2329"/>
+            <circle cx="70" cy="51" r="3.4" fill="#1f2329"/>
+            <path d="M52 60.5c5 5 11 5 16 0" stroke="#1f2329" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+            <circle cx="41" cy="58" r="5.5" fill="#ffd6d6" opacity="0.65"/>
+            <circle cx="79" cy="58" r="5.5" fill="#ffd6d6" opacity="0.65"/>
+          </svg>
+          <div class="empty-title">你好，我是发面馒头 🍞</div>
+          <div class="empty-sub">上传简历资料后，输入面试问题开始提问</div>
+        </div>`;
+
+    async function loadCollections() {
+      const res = await fetch("/api/collections");
+      const data = await res.json();
+      const sel = $("collectionSelect");
+      sel.innerHTML = data.collections.map(c =>
+        `<option value="${c.id}">${escapeHtml(c.name)}</option>`
+      ).join("");
+      currentCollectionId = data.current_id;
+      sel.value = String(currentCollectionId);
+    }
+
+    $("collectionSelect").addEventListener("change", async () => {
+      const id = parseInt($("collectionSelect").value, 10);
+      const res = await fetch("/api/collections/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (res.ok) {
+        currentCollectionId = id;
+        loadFiles();
+        restoreChat();
+      }
+    });
+
+    $("addCollectionBtn").addEventListener("click", async () => {
+      const name = prompt("新简历名称：", "我的简历");
+      if (!name || !name.trim()) return;
+      const res = await fetch("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (res.ok) {
+        toast("已创建并切换到新简历");
+        await loadCollections();
+        loadFiles();
+        restoreChat();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        toast(d.detail || "创建失败");
+      }
+    });
+
+    $("delCollectionBtn").addEventListener("click", async () => {
+      const name = $("collectionSelect").selectedOptions[0].text;
+      if (!confirm(`确定删除简历「${name}」及其全部缓存吗？此操作不可恢复。`)) return;
+      const res = await fetch("/api/collections/" + currentCollectionId, { method: "DELETE" });
+      if (res.ok) {
+        toast("已删除");
+        await loadCollections();
+        loadFiles();
+        restoreChat();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        toast(d.detail || "删除失败");
+      }
+    });
+
+    // 加载已上传文件
+    async function loadFiles() {
+      const res = await fetch("/api/files");
+      const data = await res.json();
+      const box = $("fileList");
+      $("fileCount").textContent = data.files.length;
+      if (data.files.length === 0) {
+        box.innerHTML = '<p class="muted file-empty">尚未上传文件</p>';
+        return;
+      }
+      box.innerHTML = data.files.map(f => {
+        const kb = (f.size / 1024).toFixed(1);
+        const isDocx = /\.docx?$/i.test(f.name);
+        const kind = isDocx ? "docx" : "pdf";
+        const icon = isDocx ? "📘" : "📕";
+        return `<div class="file-item">
+          <span class="file-icon ${kind}">${icon}</span>
+          <div class="file-meta">
+            <span class="name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+            <span class="size">${kb} KB</span>
+          </div>
+          <button class="del-file" data-name="${escapeHtml(f.name)}" title="删除">✕</button>
+        </div>`;
+      }).join("");
+    }
+
+    // 上传文件（选择与拖拽共用，选择后自动上传）
+    async function uploadFiles(fileList) {
+      if (!fileList || !fileList.length) return;
+      const fd = new FormData();
+      for (const f of fileList) fd.append("files", f);
+      toast("上传中…");
+      try {
+        const res = await fetch("/api/upload", { method: "POST", body: fd });
+        const data = await res.json();
+        toast(`已上传 ${data.saved.length} 个文件`);
+        $("fileInput").value = "";
+        loadFiles();
+      } catch (e) {
+        toast("上传失败：" + e.message);
+      }
+    }
+
+    $("fileInput").addEventListener("change", () => uploadFiles($("fileInput").files));
+
+    // 拖拽上传
+    const uploadZone = $("uploadZone");
+    ["dragenter", "dragover"].forEach(ev => uploadZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      uploadZone.classList.add("dragover");
+    }));
+    ["dragleave", "drop"].forEach(ev => uploadZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove("dragover");
+    }));
+    uploadZone.addEventListener("drop", (e) => uploadFiles(e.dataTransfer.files));
+    uploadZone.addEventListener("click", () => $("fileInput").click());
+
+    // 语音输入（Web Speech API，浏览器本地识别）
+    const micBtn = $("micBtn");
+    let recognition = null;
+    let listening = false;
+
+    micBtn.addEventListener("click", () => {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { toast("当前浏览器不支持语音输入，请用 Chrome / Edge"); return; }
+      if (!recognition) {
+        recognition = new SR();
+        recognition.lang = "zh-CN";
+        recognition.interimResults = true;   // 实时显示识别中间结果
+        recognition.continuous = false;
+        recognition.onresult = (e) => {
+          let text = "";
+          for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+          $("question").value = text;
+        };
+        recognition.onend = () => { listening = false; micBtn.classList.remove("listening"); };
+        recognition.onerror = (e) => {
+          listening = false;
+          micBtn.classList.remove("listening");
+          if (e.error === "not-allowed" || e.error === "service-not-allowed")
+            toast("麦克风权限被拒绝，请在浏览器里允许访问麦克风");
+          else if (e.error !== "aborted" && e.error !== "no-speech")
+            toast("语音识别出错：" + e.error);
+        };
+      }
+      if (listening) {
+        recognition.stop();
+        listening = false;
+        micBtn.classList.remove("listening");
+      } else {
+        recognition.start();
+        listening = true;
+        micBtn.classList.add("listening");
+        $("question").focus();
+      }
+    });
+
+    // 删除单个文件（事件委托）
+    $("fileList").addEventListener("click", async (e) => {
+      const btn = e.target.closest(".del-file");
+      if (!btn) return;
+      const name = btn.dataset.name;
+      if (!confirm(`确定删除「${name}」吗？`)) return;
+      try {
+        const res = await fetch("/api/files/" + encodeURIComponent(name), { method: "DELETE" });
+        if (res.ok) { toast("已删除"); loadFiles(); }
+        else toast("删除失败");
+      } catch (err) {
+        toast("删除失败：" + err.message);
+      }
+    });
+
+    // 消息头像 SVG（AI=馒头，用户=人形）
+    const BUN_SVG = `<svg viewBox="0 0 32 32" width="22" height="22"><path d="M16 4c-6.2 0-10 4.4-10 9.5 0 3.6 2.5 6.3 2.5 6.3h15s2.5-2.7 2.5-6.3C26 8.4 22.2 4 16 4z" fill="#fff" stroke="#3370ff" stroke-width="2"/><circle cx="12.5" cy="14" r="1.6" fill="#1f2329"/><circle cx="19.5" cy="14" r="1.6" fill="#1f2329"/><path d="M13.5 18c1.6 1.6 3.4 1.6 5 0" stroke="#1f2329" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>`;
+    const USER_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+
+    // 发送问题（聊天记录按简历分支存储）
+    let messages = [];
+
+    function historyKey(cid) { return "qa_chat_history_" + cid; }
+
+    function persist() {
+      try { localStorage.setItem(historyKey(currentCollectionId), JSON.stringify(messages)); } catch (e) {}
+    }
+
+    function renderMsg(m) {
+      const box = $("chatBox");
+      if (box.querySelector(".empty-state")) box.innerHTML = "";
+      const div = document.createElement("div");
+      div.className = "msg " + m.role;
+      const avatar = m.role === "ai" ? BUN_SVG : USER_SVG;
+      div.innerHTML = `<span class="avatar ${m.role}">${avatar}</span>` +
+        `<div class="msg-body"><div class="bubble">${escapeHtml(m.text)}</div>` +
+        (m.tag ? `<span class="tag">${m.tag}</span>` : "") + `</div>`;
+      box.appendChild(div);
+    }
+
+    function addMsg(role, text, tag) {
+      const m = { role, text, tag: tag || "" };
+      messages.push(m);
+      renderMsg(m);
+      const box = $("chatBox");
+      box.scrollTop = box.scrollHeight;
+      persist();
+    }
+
+    function restoreChat() {
+      messages = [];
+      try {
+        const raw = localStorage.getItem(historyKey(currentCollectionId));
+        if (raw) messages = JSON.parse(raw) || [];
+      } catch (e) { messages = []; }
+      const box = $("chatBox");
+      box.innerHTML = messages.length ? "" : EMPTY_STATE_HTML;
+      messages.forEach(m => renderMsg(m));
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    async function send() {
+      const q = $("question").value.trim();
+      if (!q) { toast("请输入问题"); return; }
+      addMsg("user", q, "");
+      $("question").value = "";
+      $("sendBtn").disabled = true;
+      $("sendBtn").querySelector(".send-label").textContent = "思考中…";
+
+      // 先占一个 AI 消息（内存态），并渲染出气泡用于流式追加
+      const box = $("chatBox");
+      if (box.querySelector(".empty-state")) box.innerHTML = "";
+      const aiMsg = { role: "ai", text: "", tag: "" };
+      messages.push(aiMsg);
+      const div = document.createElement("div");
+      div.className = "msg ai";
+      const avatar = document.createElement("span");
+      avatar.className = "avatar ai";
+      avatar.innerHTML = BUN_SVG;
+      div.appendChild(avatar);
+      const body = document.createElement("div");
+      body.className = "msg-body";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      body.appendChild(bubble);
+      div.appendChild(body);
+      box.appendChild(div);
+
+      let thinkingTimer = null;
+      const thinkStart = Date.now();
+      let answered = false;
+
+      const startThinking = () => {
+        if (thinkingTimer) return;
+        bubble.textContent = "深度思考中… 0s";
+        thinkingTimer = setInterval(() => {
+          bubble.textContent = "深度思考中… " + Math.floor((Date.now() - thinkStart) / 1000) + "s";
+        }, 1000);
+      };
+      const stopThinking = () => {
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+      };
+      const addTag = (text) => {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = text;
+        body.appendChild(span);
+      };
+
+      try {
+        const res = await fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          aiMsg.text = "⚠️ " + (data.detail || "请求失败");
+          bubble.textContent = aiMsg.text;
+          persist();
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const raw = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            for (const line of raw.split("\n")) {
+              if (!line.startsWith("data:")) continue;
+              const payload = line.slice(5).trim();
+              if (!payload) continue;
+              let evt;
+              try { evt = JSON.parse(payload); } catch (err) { continue; }
+              if (evt.type === "thinking") {
+                startThinking();
+              } else if (evt.type === "delta") {
+                stopThinking();
+                if (!answered) { answered = true; bubble.textContent = ""; }
+                aiMsg.text += evt.text;
+                bubble.textContent += evt.text;
+                box.scrollTop = box.scrollHeight;
+              } else if (evt.type === "error") {
+                stopThinking();
+                aiMsg.text = "⚠️ " + evt.text;
+                bubble.textContent = aiMsg.text;
+                persist();
+              } else if (evt.type === "done") {
+                stopThinking();
+                const tagText = evt.from_cache ? "✓ 命中缓存（未调用模型）" : `由 ${currentModel || "模型"} 生成`;
+                aiMsg.tag = tagText;
+                addTag(tagText);
+                persist();
+              }
+            }
+          }
+        }
+      } catch (e) {
+        stopThinking();
+        aiMsg.text = "⚠️ 请求失败：" + e.message;
+        bubble.textContent = aiMsg.text;
+        persist();
+      } finally {
+        stopThinking();
+        $("sendBtn").disabled = false;
+        $("sendBtn").querySelector(".send-label").textContent = "发送";
+      }
+    }
+    $("sendBtn").addEventListener("click", send);
+    $("question").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+
+    (async function init() {
+      await loadCollections();
+      restoreChat();
+      loadFiles();
+      loadSetting();
+    })();
+  </script>
+</body>
+</html>

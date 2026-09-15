@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- 发面馒头 项目专属 ----
+.env
+data/
+需求文档.doc
+需求文档_提取.txt
