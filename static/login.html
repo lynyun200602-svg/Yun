@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>登录 - 发面馒头</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="auth-logo">🍞</div>
+    <h1 class="auth-title">发面馒头</h1>
+    <p class="auth-sub">面试问答 · 简历资料管理</p>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tabLogin" type="button">登录</button>
+      <button class="auth-tab" id="tabRegister" type="button">注册</button>
+    </div>
+    <form id="authForm">
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" id="username" placeholder="2-30 个字符" autocomplete="username">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" id="password" placeholder="至少 4 位" autocomplete="current-password">
+      </div>
+      <button class="btn auth-submit" id="submitBtn" type="submit">登录</button>
+    </form>
+    <p class="auth-err" id="authErr"></p>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let mode = "login";
+
+    function setMode(m) {
+      mode = m;
+      $("tabLogin").classList.toggle("active", m === "login");
+      $("tabRegister").classList.toggle("active", m === "register");
+      $("submitBtn").textContent = m === "login" ? "登录" : "注册";
+      $("authErr").textContent = "";
+    }
+    $("tabLogin").addEventListener("click", () => setMode("login"));
+    $("tabRegister").addEventListener("click", () => setMode("register"));
+
+    $("authForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = $("username").value.trim();
+      const password = $("password").value;
+      if (!username || !password) { $("authErr").textContent = "请填写用户名和密码"; return; }
+      $("submitBtn").disabled = true;
+      try {
+        const res = await fetch("/api/" + mode, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          location.href = "/";
+        } else {
+          $("authErr").textContent = data.detail || "操作失败，请重试";
+        }
+      } catch (err) {
+        $("authErr").textContent = "网络错误：" + err.message;
+      } finally {
+        $("submitBtn").disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

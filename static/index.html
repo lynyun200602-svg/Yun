@@ -15,6 +15,7 @@
       </svg>
       <span>发面馒头</span>
     </a>
+    <button class="resume-btn" id="resumeBtn" type="button">📁 简历资料</button>
     <button class="hamburger" id="hamburger" aria-label="菜单">
       <span></span><span></span><span></span>
     </button>
@@ -22,14 +23,22 @@
       <a href="/" class="active">问答</a>
       <a href="/cache-manage">缓存管理</a>
       <a href="/setting">设置</a>
+      <span class="nav-user" id="userName"></span>
+      <button class="nav-logout" id="logoutBtn" type="button">退出</button>
     </div>
   </nav>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
 
   <div class="layout">
     <!-- 左侧栏：简历资料 -->
     <aside class="sidebar">
+      <div class="sheet-handle"></div>
       <div class="sidebar-head">
-        <span class="sidebar-title">📁 简历资料</span>
+        <div class="sidebar-top">
+          <span class="sidebar-title">📁 简历资料</span>
+          <button class="sidebar-close" id="sidebarClose" type="button" aria-label="关闭">✕</button>
+        </div>
         <div class="collection-bar">
           <select class="collection-select" id="collectionSelect"></select>
           <button class="icon-btn" id="addCollectionBtn" type="button" title="新建简历">＋</button>
@@ -41,10 +50,12 @@
         <div class="upload-zone-icon">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M12 12v9"/><path d="m8 16 4-4 4 4"/></svg>
         </div>
-        <div class="upload-zone-title">点击或拖拽上传简历</div>
-        <div class="upload-zone-sub">支持 PDF / DOCX · 可多选</div>
+        <div class="upload-zone-text">
+          <div class="upload-zone-title">点击或拖拽上传简历</div>
+          <div class="upload-zone-sub">支持 PDF / DOCX / 图片 · 可多选</div>
+        </div>
       </div>
-      <input type="file" id="fileInput" accept=".pdf,.docx" multiple style="display:none;">
+      <input type="file" id="fileInput" accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.bmp" multiple style="display:none;">
       <div class="file-section-head">
         <span>已上传文件</span>
         <span class="file-count" id="fileCount">0</span>
@@ -89,6 +100,36 @@
     $("hamburger").addEventListener("click", () => {
       $("navLinks").classList.toggle("open");
     });
+
+    // 当前用户 + 退出登录
+    async function loadMe() {
+      try {
+        const res = await fetch("/api/me");
+        if (res.status === 401) { location.href = "/login"; return; }
+        const d = await res.json();
+        $("userName").textContent = d.username;
+      } catch (e) {}
+    }
+    $("logoutBtn").addEventListener("click", async () => {
+      await fetch("/api/logout", { method: "POST" });
+      location.href = "/login";
+    });
+    loadMe();
+
+    // 手机端简历抽屉（仿豆包：底部滑出）
+    const sidebarEl = document.querySelector(".sidebar");
+    const backdropEl = $("drawerBackdrop");
+    function openDrawer() {
+      sidebarEl.classList.add("open");
+      backdropEl.classList.add("show");
+    }
+    function closeDrawer() {
+      sidebarEl.classList.remove("open");
+      backdropEl.classList.remove("show");
+    }
+    $("resumeBtn").addEventListener("click", openDrawer);
+    $("sidebarClose").addEventListener("click", closeDrawer);
+    backdropEl.addEventListener("click", closeDrawer);
 
     // 加载当前模型配置（默认沿用上次保存的，无需重复选择）
     let currentModel = "";
@@ -201,8 +242,9 @@
       box.innerHTML = data.files.map(f => {
         const kb = (f.size / 1024).toFixed(1);
         const isDocx = /\.docx?$/i.test(f.name);
-        const kind = isDocx ? "docx" : "pdf";
-        const icon = isDocx ? "📘" : "📕";
+        const isImg = /\.(jpe?g|png|webp|bmp)$/i.test(f.name);
+        const kind = isDocx ? "docx" : (isImg ? "img" : "pdf");
+        const icon = isDocx ? "📘" : (isImg ? "🖼️" : "📕");
         return `<div class="file-item">
           <span class="file-icon ${kind}">${icon}</span>
           <div class="file-meta">
@@ -309,6 +351,7 @@
     let messages = [];
 
     function historyKey(cid) { return "qa_chat_history_" + cid; }
+    function pendingKey() { return "qa_pending_ts_" + currentCollectionId; }
 
     function persist() {
       try { localStorage.setItem(historyKey(currentCollectionId), JSON.stringify(messages)); } catch (e) {}
@@ -347,11 +390,26 @@
       box.scrollTop = box.scrollHeight;
     }
 
+    // 若最后一条是用户消息（AI 还没回复就被打断/切走），自动重问补上完整回答
+    async function resumePending() {
+      if (!messages.length || messages[messages.length - 1].role !== "user") return;
+      const q = messages[messages.length - 1].text;
+      messages.pop();
+      const box = $("chatBox");
+      box.innerHTML = messages.length ? "" : EMPTY_STATE_HTML;
+      messages.forEach(m => renderMsg(m));
+      persist();
+      $("question").value = q;
+      let startAt;
+      try { startAt = parseInt(localStorage.getItem(pendingKey()) || "", 10); } catch (e) {}
+      await send(Number.isFinite(startAt) && startAt > 0 ? startAt : undefined);
+    }
+
     function escapeHtml(s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    async function send() {
+    async function send(startAt) {
       const q = $("question").value.trim();
       if (!q) { toast("请输入问题"); return; }
       addMsg("user", q, "");
@@ -379,15 +437,21 @@
       box.appendChild(div);
 
       let thinkingTimer = null;
-      const thinkStart = Date.now();
+      // 切走再回来时沿用上次提问的时间，思考计时连续不归零
+      const resuming = typeof startAt === "number" && startAt > 0;
+      const thinkStart = resuming ? startAt : Date.now();
+      if (!resuming) {
+        try { localStorage.setItem(pendingKey(), String(thinkStart)); } catch (e) {}
+      }
       let answered = false;
 
       const startThinking = () => {
         if (thinkingTimer) return;
-        bubble.textContent = "深度思考中… 0s";
-        thinkingTimer = setInterval(() => {
+        const show = () => {
           bubble.textContent = "深度思考中… " + Math.floor((Date.now() - thinkStart) / 1000) + "s";
-        }, 1000);
+        };
+        show();
+        thinkingTimer = setInterval(show, 1000);
       };
       const stopThinking = () => {
         if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
@@ -459,11 +523,12 @@
         persist();
       } finally {
         stopThinking();
+        try { localStorage.removeItem(pendingKey()); } catch (e) {}
         $("sendBtn").disabled = false;
         $("sendBtn").querySelector(".send-label").textContent = "发送";
       }
     }
-    $("sendBtn").addEventListener("click", send);
+    $("sendBtn").addEventListener("click", () => send());
     $("question").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
     });
@@ -473,6 +538,7 @@
       restoreChat();
       loadFiles();
       loadSetting();
+      await resumePending();
     })();
   </script>
 </body>

@@ -112,6 +112,8 @@ html, body {
   }
   .nav-links.open { display: flex; }
   .nav-links a { padding: 12px; }
+  .nav-links .nav-user { padding: 12px; border-left: none; margin-left: 0; }
+  .nav-links .nav-logout { padding: 12px; text-align: left; }
 }
 
 /* ---------- 容器 ---------- */
@@ -390,6 +392,7 @@ input:focus, textarea:focus {
 }
 .file-icon.pdf { background: #fef0f0; }
 .file-icon.docx { background: #eef4ff; }
+.file-icon.img { background: #f0faf3; }
 .file-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .file-meta .name {
   font-size: 12px;
@@ -674,14 +677,223 @@ input:focus, textarea:focus {
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-/* ---------- 响应式：移动端堆叠 ---------- */
+/* ---------- 导航栏：当前用户与退出 ---------- */
+.nav-user {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 12px;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 1px solid var(--border);
+  margin-left: 8px;
+}
+.nav-logout {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 7px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-logout:hover { background: var(--bg); color: var(--danger); }
+
+/* ---------- 登录 / 注册页 ---------- */
+.auth-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(720px 420px at 12% -6%, rgba(51, 112, 255, 0.10), transparent 60%),
+    radial-gradient(620px 420px at 88% 106%, rgba(107, 155, 255, 0.10), transparent 60%),
+    var(--bg);
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 32px 28px;
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.auth-logo { font-size: 44px; line-height: 1; margin-bottom: 10px; }
+.auth-title { font-size: 22px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.2px; }
+.auth-sub { font-size: 13px; color: var(--muted); margin: 0 0 22px; }
+.auth-tabs {
+  display: flex;
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 3px;
+  margin-bottom: 20px;
+}
+.auth-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 8px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+}
+.auth-tab.active {
+  background: #fff;
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.auth-card .field { text-align: left; }
+.auth-submit { width: 100%; margin-top: 6px; }
+.auth-err { min-height: 18px; font-size: 13px; color: var(--danger); margin-top: 12px; }
+
+/* ---------- 手机端抽屉（桌面端隐藏） ---------- */
+.resume-btn { display: none; }
+.sheet-handle { display: none; }
+.sidebar-close { display: none; }
+.drawer-backdrop { display: none; }
+.sidebar-top { display: flex; align-items: center; justify-content: space-between; }
+
+/* ---------- 响应式：移动端（仿豆包） ---------- */
 @media (max-width: 768px) {
-  .layout { flex-direction: column; height: auto; overflow: visible; }
-  .sidebar {
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 42vh;
-  }
+  /* 聊天铺满全屏，简历资料收进底部抽屉 */
+  .layout { display: block; height: auto; overflow: visible; }
   .chat-panel { height: calc(100vh - 58px); }
+
+  /* 导航栏里的「简历资料」入口 */
+  .resume-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--blue-50);
+    color: var(--primary);
+    border: none;
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    margin-left: auto;
+    margin-right: 6px;
+  }
+
+  /* 简历资料：底部抽屉（默认滑出屏幕外） */
+  .sidebar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: 100%;
+    height: 86vh;
+    max-height: 86vh;
+    border-right: none;
+    border-bottom: none;
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 32px rgba(31, 35, 41, 0.18);
+    transform: translateY(100%);
+    transition: transform 0.28s ease;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 16px 20px;
+  }
+  .sidebar.open { transform: translateY(0); }
+
+  /* 抽屉顶部拖拽条 + 关闭按钮 */
+  .sheet-handle {
+    display: block;
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: #d7dae2;
+    margin: 4px auto 14px;
+    flex-shrink: 0;
+  }
+  .sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 50%;
+    background: var(--bg);
+    color: var(--text-soft);
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  /* 抽屉背景遮罩 */
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(31, 35, 41, 0.4);
+    z-index: 45;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s ease;
+  }
+  .drawer-backdrop.show { opacity: 1; pointer-events: auto; }
+
+  /* 聊天区：加宽气泡、减少留白，回答完整显示 */
+  .chat-head { padding: 12px 16px; font-size: 16px; }
+  .model-badge { display: none; }
+  .chat-box { padding: 18px 14px; }
+  .msg { gap: 8px; }
+  .msg .avatar { width: 30px; height: 30px; }
+  .msg .bubble { padding: 11px 14px; font-size: 15px; line-height: 1.7; }
+  .chat-input { margin: 10px 12px 16px; }
+
+  /* 上传框：紧凑横排，减少高度与留白 */
+  .upload-zone {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+    padding: 12px 14px;
+  }
+  .upload-zone-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    margin-bottom: 0;
+    flex-shrink: 0;
+  }
+  .upload-zone-text { min-width: 0; }
+
+  /* 文件区：与上传框分隔，撑满剩余空间 */
+  .file-section-head {
+    margin: 18px 0 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .file-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .file-empty { margin: auto; text-align: center; padding: 12px; }
+  .file-item { flex-shrink: 0; }
 }

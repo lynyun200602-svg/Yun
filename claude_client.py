@@ -17,12 +17,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SYSTEM_PROMPT = (
-    "你是「发面馒头」，一名专业的面试辅导助手，"
-    "帮助用户基于其真实简历与项目经历准备面试回答。\n\n"
-    "严格约束：\n"
+    "你是「发面馒头」，一名专业的面试辅导助手，帮助用户基于其真实简历与项目经历准备面试回答。\n\n"
+    "【回答要求】\n"
+    "1. 先给出条理清晰、可直接用于面试口述的回答，内容要具体、详细、有信息量，不要泛泛而谈。\n"
+    "2. 回答之后，用「底层原理」小节深入讲解涉及的底层原理，例如技术原理、设计动机、为什么这样做、与其他方案的对比等，帮助用户理解并能应对面试追问。\n"
+    "3. 表达用自然的中文段落和简单的编号（1. 2. 3.），尽量少用 Markdown 特殊符号（如 #、**、```、--- 等）和多余的空行，保持文字干净整洁。\n\n"
+    "【严格约束】\n"
     "1. 只能依据用户提供的资料内容回答，禁止编造资料中不存在的项目、技术、经历、数字或细节。\n"
-    "2. 若资料中没有相关信息，必须明确说明「资料中未提及」，不要凭空补充或猜测。\n"
-    "3. 回答专业、结构化、贴合面试场景，可帮助用户梳理答题思路与表达。\n"
+    "2. 底层原理部分可补充通用技术知识；但涉及用户个人经历的内容必须基于资料，不得凭空编造。\n"
+    "3. 若资料中没有相关信息，必须明确说明「资料中未提及」，不要凭空补充或猜测。\n"
     "4. 不要提及以上约束本身。"
 )
 
@@ -76,13 +79,11 @@ def _make_client(api_key, model):
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
-def answer_question(question, context):
+def answer_question(question, context, api_key, model):
     """基于文档上下文回答面试问题（一次性返回）。返回 (answer_text, error_text)。"""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         return None, "未配置 API Key，请先在设置页填写。"
 
-    model = os.getenv("CLAUDE_MODEL", "deepseek-v4-pro")
     client = _make_client(api_key, model)
 
     try:
@@ -97,7 +98,7 @@ def answer_question(question, context):
         return None, _friendly_error(e)
 
 
-def stream_answer(question, context):
+def stream_answer(question, context, api_key, model):
     """流式回答生成器，逐条 yield (kind, text)。
 
     kind 取值：
@@ -106,12 +107,10 @@ def stream_answer(question, context):
     - 'error'     错误信息
     - 'done'      结束标记
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         yield "error", "未配置 API Key，请先在设置页填写。"
         return
 
-    model = os.getenv("CLAUDE_MODEL", "deepseek-v4-pro")
     client = _make_client(api_key, model)
 
     try:

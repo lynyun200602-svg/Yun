@@ -22,6 +22,8 @@
       <a href="/">问答</a>
       <a href="/cache-manage" class="active">缓存管理</a>
       <a href="/setting">设置</a>
+      <span class="nav-user" id="userName"></span>
+      <button class="nav-logout" id="logoutBtn" type="button">退出</button>
     </div>
   </nav>
 
@@ -51,6 +53,21 @@
       toastTimer = setTimeout(() => t.classList.remove("show"), 2500);
     }
     $("hamburger").addEventListener("click", () => $("navLinks").classList.toggle("open"));
+
+    // 当前用户 + 退出登录
+    async function loadMe() {
+      try {
+        const res = await fetch("/api/me");
+        if (res.status === 401) { location.href = "/login"; return; }
+        const d = await res.json();
+        $("userName").textContent = d.username;
+      } catch (e) {}
+    }
+    $("logoutBtn").addEventListener("click", async () => {
+      await fetch("/api/logout", { method: "POST" });
+      location.href = "/login";
+    });
+    loadMe();
 
     function escapeHtml(s) {
       return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

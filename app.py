@@ -1,21 +1,22 @@
-"""发面馒头 —— FastAPI 主应用。
+"""发面馒头 —— FastAPI 主应用（多用户版）。
 
-第一版范围：
-- 不用 Chroma / embedding；qa_cache.query_embedding 保留但不用
-- 缓存命中 = 字符串完全相等
-- 上传 pdf/docx 只存磁盘，提问时读全文做上下文
-- 数据库存「问题-解答」问答对，可复用
+- 账号密码登录：会话通过 HttpOnly Cookie（sessions 表）识别当前用户
+- 每个用户独立：简历集合、问答缓存、API Key/模型、当前简历均按用户隔离
+- 各端登录同一账号，数据自动同步；不同账号之间互不可见
 """
 import json
 import os
+import queue
+import threading
+import time
 from pathlib import Path
 from typing import List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Response, Depends
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 
 import db
 import document
@@ -25,17 +26,36 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-ENV_PATH = BASE_DIR / ".env"
 
 app = FastAPI(title="发面馒头")
 
 db.init_db()
-# 旧版平铺在根目录的文件迁入默认简历集合
-_default_cid = db.get_current_collection()
-if _default_cid:
-    document.migrate_legacy_files(_default_cid)
+
+SESSION_COOKIE = "session"
 
 
+# ================= 认证 =================
+def _current_user(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    return db.get_session_user(token) if token else None
+
+
+def require_user(request: Request):
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="未登录或登录已过期")
+    return user
+
+
+def _set_session(response: Response, user_id: int):
+    token = db.create_session(user_id)
+    response.set_cookie(
+        SESSION_COOKIE, token,
+        httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30,
+    )
+
+
+# ================= 请求模型 =================
 class ChatRequest(BaseModel):
     question: str
 
@@ -57,31 +77,92 @@ class CollectionSwitch(BaseModel):
     id: int
 
 
+class AuthRequest(BaseModel):
+    username: str
+    password: str
+
+
 # ================= 页面 =================
+@app.get("/login")
+def page_login():
+    return FileResponse(STATIC_DIR / "login.html")
+
+
 @app.get("/")
 @app.get("/index")
-def page_index():
+def page_index(request: Request):
+    if not _current_user(request):
+        return RedirectResponse("/login")
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/cache-manage")
-def page_cache():
+def page_cache(request: Request):
+    if not _current_user(request):
+        return RedirectResponse("/login")
     return FileResponse(STATIC_DIR / "cache.html")
 
 
 @app.get("/setting")
-def page_setting():
+def page_setting(request: Request):
+    if not _current_user(request):
+        return RedirectResponse("/login")
     return FileResponse(STATIC_DIR / "setting.html")
+
+
+# ================= 认证接口 =================
+@app.post("/api/register")
+def api_register(req: AuthRequest, response: Response):
+    username = req.username.strip()
+    password = req.password
+    if not (2 <= len(username) <= 30):
+        raise HTTPException(400, "用户名需 2-30 个字符")
+    if len(password) < 4:
+        raise HTTPException(400, "密码至少 4 位")
+    if db.get_user_by_username(username):
+        raise HTTPException(400, "用户名已存在")
+    # 新用户默认继承全局 .env 的 Key 与模型，可后续在设置页改为自己的
+    default_key = os.getenv("ANTHROPIC_API_KEY", "")
+    default_model = os.getenv("CLAUDE_MODEL", "deepseek-v4-pro")
+    user_id = db.create_user(username, password, default_key, default_model)
+    _set_session(response, user_id)
+    return {"ok": True}
+
+
+@app.post("/api/login")
+def api_login(req: AuthRequest, response: Response):
+    user = db.get_user_by_username(req.username.strip())
+    if not user or not db.verify_password(req.password, user["password_hash"]):
+        raise HTTPException(400, "用户名或密码错误")
+    _set_session(response, user["id"])
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+def api_logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        db.delete_session(token)
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(401, "未登录")
+    return {"username": user["username"]}
 
 
 # ================= 上传 =================
 @app.post("/api/upload")
-async def api_upload(files: List[UploadFile] = File(...)):
-    cid = db.get_current_collection()
+async def api_upload(files: List[UploadFile] = File(...), user: dict = Depends(require_user)):
+    cid = db.get_current_collection(user["id"])
     saved = []
     for f in files:
         ext = Path(f.filename).suffix.lower()
-        if ext not in (".pdf", ".docx"):
+        if ext not in document.SUPPORTED:
             continue
         dest = Path(document.upload_dir(cid)) / f.filename
         dest.write_bytes(await f.read())
@@ -90,14 +171,14 @@ async def api_upload(files: List[UploadFile] = File(...)):
 
 
 @app.get("/api/files")
-def api_files():
-    cid = db.get_current_collection()
+def api_files(user: dict = Depends(require_user)):
+    cid = db.get_current_collection(user["id"])
     return {"files": document.list_files(cid)}
 
 
 @app.delete("/api/files/{name}")
-def api_delete_file(name: str):
-    cid = db.get_current_collection()
+def api_delete_file(name: str, user: dict = Depends(require_user)):
+    cid = db.get_current_collection(user["id"])
     d = Path(document.upload_dir(cid)).resolve()
     p = (d / name).resolve()
     # 防止路径穿越：只允许删除 upload 目录内的文件
@@ -110,8 +191,8 @@ def api_delete_file(name: str):
 
 
 @app.delete("/api/files")
-def api_clear_files():
-    cid = db.get_current_collection()
+def api_clear_files(user: dict = Depends(require_user)):
+    cid = db.get_current_collection(user["id"])
     d = Path(document.upload_dir(cid))
     removed = 0
     if d.exists():
@@ -124,9 +205,10 @@ def api_clear_files():
 
 # ================= 简历集合（分支） =================
 @app.get("/api/collections")
-def api_collections():
-    cid = db.get_current_collection()
-    items = db.list_collections()
+def api_collections(user: dict = Depends(require_user)):
+    uid = user["id"]
+    cid = db.get_current_collection(uid)
+    items = db.list_collections(uid)
     for it in items:
         it["file_count"] = len(document.list_files(it["id"]))
         it["current"] = (it["id"] == cid)
@@ -134,58 +216,60 @@ def api_collections():
 
 
 @app.post("/api/collections")
-def api_create_collection(req: CollectionCreate):
+def api_create_collection(req: CollectionCreate, user: dict = Depends(require_user)):
     name = req.name.strip()
     if not name:
         raise HTTPException(400, "名称不能为空")
-    new_id = db.create_collection(name)
-    db.set_current_collection(new_id)
+    new_id = db.create_collection(user["id"], name)
+    db.set_current_collection(user["id"], new_id)
     return {"ok": True, "id": new_id}
 
 
 @app.post("/api/collections/switch")
-def api_switch_collection(req: CollectionSwitch):
-    db.set_current_collection(req.id)
+def api_switch_collection(req: CollectionSwitch, user: dict = Depends(require_user)):
+    db.set_current_collection(user["id"], req.id)
     return {"ok": True}
 
 
 @app.delete("/api/collections/{cid}")
-def api_delete_collection(cid: int):
-    if len(db.list_collections()) <= 1:
+def api_delete_collection(cid: int, user: dict = Depends(require_user)):
+    uid = user["id"]
+    if len(db.list_collections(uid)) <= 1:
         raise HTTPException(400, "至少保留一个简历")
     document.delete_collection_files(cid)
-    db.delete_collection(cid)
-    if db.get_current_collection() == cid:
-        db.set_current_collection(db.list_collections()[0]["id"])
+    db.delete_collection(uid, cid)
+    if db.get_current_collection(uid) == cid:
+        db.set_current_collection(uid, db.list_collections(uid)[0]["id"])
     return {"ok": True}
 
 
 # ================= 问答核心 =================
 @app.post("/api/chat")
-def api_chat(req: ChatRequest):
+def api_chat(req: ChatRequest, user: dict = Depends(require_user)):
     question = req.question.strip()
     if not question:
         raise HTTPException(400, "问题不能为空")
 
-    cid = db.get_current_collection()
+    uid = user["id"]
+    cid = db.get_current_collection(uid)
 
-    # 1. 缓存精确匹配（完全相等，按当前简历分支）
-    hit = db.find_by_query(question, cid)
+    # 1. 缓存精确匹配（完全相等，按当前用户 + 简历分支）
+    hit = db.find_by_query(uid, question, cid)
     if hit:
         return {"answer": hit["ai_answer"], "from_cache": True, "id": hit["id"]}
 
     # 2. 读取当前简历集合的全部文档作为上下文
     context = document.read_documents(cid)
     if not context:
-        raise HTTPException(400, "当前简历尚未上传资料，请先上传 pdf/docx 文件")
+        raise HTTPException(400, "当前简历尚未上传资料，请先上传 pdf/docx/图片 文件")
 
-    # 3. 调用模型
-    answer, err = claude_client.answer_question(question, context)
+    # 3. 调用模型（使用当前用户自己的 Key 与模型）
+    answer, err = claude_client.answer_question(question, context, user["api_key"], user["model"])
     if err:
         raise HTTPException(500, err)
 
-    # 4. 写入缓存（归属当前简历分支）
-    qa_id = db.save_qa(question, answer, cid)
+    # 4. 写入缓存（归属当前用户 + 简历分支）
+    qa_id = db.save_qa(uid, question, answer, cid)
 
     return {"answer": answer, "from_cache": False, "id": qa_id}
 
@@ -196,72 +280,141 @@ def _sse(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+# 正在生成中的问题（(uid, cid, question)），用于防重复生成 + 切走后完成后可从缓存取回
+_generating = set()
+_generating_lock = threading.Lock()
+
+
+def _is_generating(key):
+    with _generating_lock:
+        return key in _generating
+
+
+def _add_generating(key):
+    with _generating_lock:
+        _generating.add(key)
+
+
+def _remove_generating(key):
+    with _generating_lock:
+        _generating.discard(key)
+
+
 @app.post("/api/chat/stream")
-def api_chat_stream(req: ChatRequest):
+def api_chat_stream(req: ChatRequest, user: dict = Depends(require_user)):
     question = req.question.strip()
     if not question:
         raise HTTPException(400, "问题不能为空")
 
-    cid = db.get_current_collection()
+    uid = user["id"]
+    cid = db.get_current_collection(uid)
+    key = (uid, cid, question)
 
-    # 1. 缓存精确匹配（按当前简历分支）→ 直接流式返回历史答案
-    hit = db.find_by_query(question, cid)
+    # 1. 缓存精确匹配（按当前用户 + 简历分支）→ 直接流式返回历史答案
+    hit = db.find_by_query(uid, question, cid)
     if hit:
         def gen_cache():
             yield _sse({"type": "delta", "text": hit["ai_answer"]})
             yield _sse({"type": "done", "from_cache": True, "id": hit["id"]})
         return StreamingResponse(gen_cache(), media_type="text/event-stream")
 
-    # 2. 读取当前简历集合的全部文档作为上下文
+    # 2. 正在生成中（比如用户切走又回来重新提交）→ 等它完成，从缓存取回，避免重复调用模型
+    if _is_generating(key):
+        def gen_wait():
+            yield _sse({"type": "thinking"})
+            while _is_generating(key):
+                time.sleep(0.3)
+            hit2 = db.find_by_query(uid, question, cid)
+            if hit2:
+                yield _sse({"type": "delta", "text": hit2["ai_answer"]})
+                yield _sse({"type": "done", "from_cache": True, "id": hit2["id"]})
+            else:
+                yield _sse({"type": "error", "text": "回答生成失败，请重试"})
+        return StreamingResponse(gen_wait(), media_type="text/event-stream")
+
+    # 3. 读取当前简历集合的全部文档作为上下文
     context = document.read_documents(cid)
     if not context:
-        raise HTTPException(400, "当前简历尚未上传资料，请先上传 pdf/docx 文件")
+        raise HTTPException(400, "当前简历尚未上传资料，请先上传 pdf/docx/图片 文件")
 
-    # 3. 流式调用模型，逐字返回
-    def gen():
+    # 4. 在后台线程生成并落库（与 SSE 连接解耦：用户中途切走也不丢回答）
+    _add_generating(key)
+    q = queue.Queue()
+
+    def worker():
         parts = []
-        for kind, text in claude_client.stream_answer(question, context):
+        failed = False
+        try:
+            for kind, text in claude_client.stream_answer(question, context, user["api_key"], user["model"]):
+                if kind == "thinking":
+                    q.put(("thinking", ""))
+                elif kind == "delta":
+                    parts.append(text)
+                    q.put(("delta", text))
+                elif kind == "error":
+                    failed = True
+                    q.put(("error", text))
+                    return
+                elif kind == "done":
+                    break
+        except Exception as e:  # 兜底：stream_answer 内部已捕获，这里双保险
+            failed = True
+            q.put(("error", str(e)))
+        finally:
+            if failed:
+                q.put(("done", None))
+            else:
+                answer = "".join(parts).strip()
+                if answer:
+                    qa_id = db.save_qa(uid, question, answer, cid)
+                    q.put(("done", qa_id))
+                else:
+                    q.put(("done", None))
+            q.put(None)  # 结束哨兵
+            _remove_generating(key)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def gen():
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            kind, val = item
             if kind == "thinking":
                 yield _sse({"type": "thinking"})
             elif kind == "delta":
-                parts.append(text)
-                yield _sse({"type": "delta", "text": text})
+                yield _sse({"type": "delta", "text": val})
             elif kind == "error":
-                yield _sse({"type": "error", "text": text})
+                yield _sse({"type": "error", "text": val})
                 return
             elif kind == "done":
-                break
-        answer = "".join(parts).strip()
-        if answer:
-            qa_id = db.save_qa(question, answer, cid)
-            yield _sse({"type": "done", "id": qa_id})
-        else:
-            yield _sse({"type": "done"})
+                yield _sse({"type": "done", "id": val})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # ================= 缓存管理 =================
 @app.get("/api/cache")
-def api_cache():
-    return {"items": db.list_qa()}
+def api_cache(user: dict = Depends(require_user)):
+    return {"items": db.list_qa(user["id"])}
 
 
 @app.put("/api/cache/{qa_id}")
-def api_cache_update(qa_id: int, req: UpdateRequest):
-    db.update_qa(qa_id, req.ai_answer)
+def api_cache_update(qa_id: int, req: UpdateRequest, user: dict = Depends(require_user)):
+    db.update_qa(user["id"], qa_id, req.ai_answer)
     return {"ok": True}
 
 
 @app.delete("/api/cache/{qa_id}")
-def api_cache_delete(qa_id: int):
-    db.delete_qa(qa_id)
+def api_cache_delete(qa_id: int, user: dict = Depends(require_user)):
+    db.delete_qa(user["id"], qa_id)
     return {"ok": True}
 
 
 @app.get("/api/cache/export")
-def api_cache_export():
-    items = db.list_qa()
+def api_cache_export(user: dict = Depends(require_user)):
+    items = db.list_qa(user["id"])
     lines = ["# 面试问答缓存", ""]
     for it in items:
         lines.append(f"## Q：{it['user_query']}")
@@ -275,23 +428,21 @@ def api_cache_export():
     return {"content": "\n".join(lines), "count": len(items)}
 
 
-# ================= 设置 =================
+# ================= 设置（按用户） =================
 @app.post("/api/setting")
-def api_save_setting(req: SettingRequest):
+def api_save_setting(req: SettingRequest, user: dict = Depends(require_user)):
     key = req.api_key.strip()
+    model = req.model.strip() or user["model"]
     if key:
-        set_key(str(ENV_PATH), "ANTHROPIC_API_KEY", key)
-        os.environ["ANTHROPIC_API_KEY"] = key
-    model = req.model.strip() or os.getenv("CLAUDE_MODEL", "deepseek-v4-pro")
-    set_key(str(ENV_PATH), "CLAUDE_MODEL", model)
-    os.environ["CLAUDE_MODEL"] = model
+        db.update_user_setting(user["id"], api_key=key)
+    db.update_user_setting(user["id"], model=model)
     return {"ok": True}
 
 
 @app.get("/api/setting")
-def api_get_setting():
-    key = os.getenv("ANTHROPIC_API_KEY", "")
-    model = os.getenv("CLAUDE_MODEL", "deepseek-v4-pro")
+def api_get_setting(user: dict = Depends(require_user)):
+    key = user["api_key"]
+    model = user["model"]
     _, provider = claude_client.resolve_provider(key, model)
     masked = ""
     if key:
